@@ -1,139 +1,113 @@
-FROM php:8.5-fpm
+# syntax=docker/dockerfile:1.7
 
-ENV COMPOSER_MEMORY_LIMIT='-1'
+FROM composer:2 AS composer
 
-ENV PS1="\u@\h:\w\\$ "
-ENV TZ="Asia/Jakarta"
+FROM php:8.5-fpm-bookworm
 
-RUN apt-get update && \
-    apt-get install -y --force-yes --no-install-recommends \
-        libmemcached-dev \
-        libmcrypt-dev \
-        libreadline-dev \
-        libgmp-dev \
-        libzip-dev \
-        libz-dev \
-        libpq-dev \
-        libjpeg-dev \
-        libpng-dev \
-        libfreetype6-dev \
-        libssl-dev \
-        openssh-server \
-        libmagickwand-dev \
-        git \
+ARG INSTALL_XDEBUG=false
+
+ENV COMPOSER_ALLOW_SUPERUSER=1 \
+    COMPOSER_MEMORY_LIMIT=-1 \
+    TZ=Asia/Jakarta
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
         cron \
-        nano \
-        libxml2-dev
+        git \
+        libcurl4-openssl-dev \
+        libfreetype6-dev \
+        libgmp-dev \
+        libicu-dev \
+        libjpeg62-turbo-dev \
+        libmagickwand-dev \
+        libmemcached-dev \
+        libonig-dev \
+        libpng-dev \
+        libpq-dev \
+        libsasl2-dev \
+        libssl-dev \
+        libxml2-dev \
+        libzip-dev \
+        pkg-config \
+        unzip \
+        zlib1g-dev; \
+    docker-php-ext-configure gd --with-freetype --with-jpeg; \
+    docker-php-ext-install -j"$(nproc)" \
+        bcmath \
+        curl \
+        exif \
+        gd \
+        gmp \
+        intl \
+        mbstring \
+        pcntl \
+        pdo_mysql \
+        pdo_pgsql \
+        soap \
+        sockets \
+        zip; \
+    pecl channel-update pecl.php.net; \
+    pecl install redis mongodb imagick; \
+    yes '' | pecl install memcached; \
+    docker-php-ext-enable redis mongodb imagick memcached; \
+    if [ "${INSTALL_XDEBUG}" = "true" ]; then \
+        pecl install xdebug; \
+    fi; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/* /tmp/pear
 
-# Install soap extension
-RUN docker-php-ext-install soap
+COPY --from=composer /usr/bin/composer /usr/local/bin/composer
 
-# Install exif extension for image manipulation
-RUN docker-php-ext-install exif
+COPY local.ini /usr/local/etc/php/conf.d/99-vinsen.ini
 
-# Install the PHP pcntl extension
-RUN docker-php-ext-install pcntl
-
-# Install the PHP intl extension
-RUN docker-php-ext-install intl
-
-# Install the PHP gmp extension
-RUN docker-php-ext-install gmp
-
-# Install the PHP zip extension
-RUN docker-php-ext-install zip
-
-# Install the PHP pdo_mysql extension
-RUN docker-php-ext-install pdo_mysql
-
-# Install the PHP pdo_pgsql extension
-RUN docker-php-ext-install pdo_pgsql
-
-# Install the PHP bcmath extension
-RUN docker-php-ext-install bcmath
-
-#####################################
-# PHPRedis:
-#####################################
-RUN pecl install redis && docker-php-ext-enable redis
-RUN pecl install mongodb && docker-php-ext-enable mongodb
-
-#####################################
-# Imagick:
-#####################################
-RUN pecl install imagick && \
-    docker-php-ext-enable imagick
-
-#####################################
-# GD:
-#####################################
-RUN docker-php-ext-configure gd --with-freetype --with-jpeg && \
-    docker-php-ext-install gd
-
-#####################################
-# xDebug:
-#####################################
-# Install the xdebug extension
-RUN pecl install xdebug
-
-#####################################
-# PHP Memcached:
-#####################################
-# Install the php memcached extension
-RUN pecl install memcached && docker-php-ext-enable memcached
-
-#####################################
-# Composer:
-#####################################
-# Install composer and add its bin to the PATH.
-RUN curl -s http://getcomposer.org/installer | php && \
-    mv composer.phar /usr/local/bin/composer
-
-#####################################
-# Laravel Schedule Cron Job:
-#####################################
-RUN echo "* * * * * root /usr/local/bin/php /var/www/html/artisan schedule:run >> /dev/null 2>&1" >> /etc/cron.d/laravel-scheduler
-RUN chmod 0644 /etc/cron.d/laravel-scheduler
-
-#
-#--------------------------------------------------------------------------
-# Final Touch
-#--------------------------------------------------------------------------
-#
-
-ADD ./local.ini /usr/local/etc/php/conf.d
-
-#####################################
-# Aliases:
-#####################################
-# docker-compose exec php-fpm dep --> locally installed Deployer binaries
-RUN echo '#!/bin/bash\n/usr/local/bin/php /var/www/vendor/bin/dep "$@"' > /usr/bin/dep
-RUN chmod +x /usr/bin/dep
-# docker-compose exec php-fpm art --> php artisan
-RUN echo '#!/bin/bash\n/usr/local/bin/php /var/www/html/artisan "$@"' > /usr/bin/art
-RUN chmod +x /usr/bin/art
-# docker-compose exec php-fpm migrate --> php artisan migrate
-RUN echo '#!/bin/bash\n/usr/local/bin/php /var/www/html/artisan migrate "$@"' > /usr/bin/migrate
-RUN chmod +x /usr/bin/migrate
-# docker-compose exec php-fpm fresh --> php artisan migrate:fresh --seed
-RUN echo '#!/bin/bash\n/usr/local/bin/php /var/www/html/artisan migrate:fresh --seed' > /usr/bin/fresh
-RUN chmod +x /usr/bin/fresh
-# docker-compose exec php-fpm t --> run the tests for the project and generate testdox
-RUN echo '#!/bin/bash\n/usr/local/bin/php /var/www/html/artisan config:clear\n/var/www/vendor/bin/phpunit -d memory_limit=2G --stop-on-error --stop-on-failure --testdox-text=tests/report.txt "$@"' > /usr/bin/t
-RUN chmod +x /usr/bin/t
-# docker-compose exec php-fpm d --> run the Laravel Dusk browser tests for the project
-RUN echo '#!/bin/bash\n/usr/local/bin/php /var/www/html/artisan config:clear\n/bin/bash\n/usr/local/bin/php /var/www/html/artisan dusk -d memory_limit=2G --stop-on-error --stop-on-failure --testdox-text=tests/report-dusk.txt "$@"' > /usr/bin/d
-RUN chmod +x /usr/bin/d
-
-RUN rm -r /var/lib/apt/lists/*
+RUN set -eux; \
+    printf '%s\n' \
+        '* * * * * root cd /var/www/html && /usr/local/bin/php artisan schedule:run >> /proc/1/fd/1 2>> /proc/1/fd/2' \
+        > /etc/cron.d/laravel-scheduler; \
+    chmod 0644 /etc/cron.d/laravel-scheduler; \
+    printf '%s\n' \
+        '#!/usr/bin/env bash' \
+        'exec /var/www/html/vendor/bin/dep "$@"' \
+        > /usr/local/bin/dep; \
+    printf '%s\n' \
+        '#!/usr/bin/env bash' \
+        'exec /usr/local/bin/php /var/www/html/artisan "$@"' \
+        > /usr/local/bin/art; \
+    printf '%s\n' \
+        '#!/usr/bin/env bash' \
+        'exec /usr/local/bin/php /var/www/html/artisan migrate "$@"' \
+        > /usr/local/bin/migrate; \
+    printf '%s\n' \
+        '#!/usr/bin/env bash' \
+        'exec /usr/local/bin/php /var/www/html/artisan migrate:fresh --seed "$@"' \
+        > /usr/local/bin/fresh; \
+    printf '%s\n' \
+        '#!/usr/bin/env bash' \
+        'exec /var/www/html/vendor/bin/phpunit "$@"' \
+        > /usr/local/bin/t; \
+    printf '%s\n' \
+        '#!/usr/bin/env bash' \
+        'exec /usr/local/bin/php /var/www/html/artisan dusk "$@"' \
+        > /usr/local/bin/d; \
+    chmod +x \
+        /usr/local/bin/dep \
+        /usr/local/bin/art \
+        /usr/local/bin/migrate \
+        /usr/local/bin/fresh \
+        /usr/local/bin/t \
+        /usr/local/bin/d
 
 WORKDIR /var/www/html
 
-COPY ./docker-entrypoint.sh /usr/local/bin/
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
-RUN ln -s /usr/local/bin/docker-entrypoint.sh /
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint
 
-ENTRYPOINT ["docker-entrypoint.sh"]
+RUN chmod +x /usr/local/bin/docker-entrypoint
 
-EXPOSE 9000
+ENTRYPOINT ["docker-entrypoint"]
+
+EXPOSE 9000 8080
+
+STOPSIGNAL SIGQUIT
+
 CMD ["php-fpm"]
